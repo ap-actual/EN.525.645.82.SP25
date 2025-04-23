@@ -336,3 +336,41 @@ end
 fprintf('------------------\n');
 fprintf('Final Lat: %f\n', rad2deg(lat));
 fprintf('Final Lon: %f\n', rad2deg(lon));
+
+%% 8.3.1
+% In navigation problems, it is common to divide by the sine or cosine of 
+% an angle. For a 1% measurement error in the measurement of θ, plot the 
+% corresponding estimation error in the function f(θ) = 1/cos(θ) 
+% for 0 < θ < 90 degrees.
+
+clear, clc
+
+% plot range
+theta = 0:0.001:pi; % rads
+
+% 1% measurement error 
+theta_error = 0.01 .* theta;
+
+% compute error vals
+f_nominal = 1 ./ cos(theta);
+f_plus = 1 ./ cos(theta + theta_error);
+f_minus = 1 ./ cos(theta - theta_error);
+
+error_plus  = f_plus - f_nominal;
+error_minus = f_minus - f_nominal;
+
+
+% plot
+figure; hold on; grid on;
+lw = 1.5;
+plot(rad2deg(theta), abs(error_plus), '-k', 'LineWidth', lw); lgnd(1) = "+1% Error";
+plot(rad2deg(theta), abs(error_minus), '--k', 'LineWidth', lw); lgnd(end+1) = "-1% Error";
+
+yscale log
+
+xlabel('\theta (degrees)');
+ylabel('Estimation Error in f(\theta)');
+title('Estimation Error in f(\theta) = 1/cos(\theta) due to 1% Error in \theta');
+grid on;
+legend(lgnd)
+
