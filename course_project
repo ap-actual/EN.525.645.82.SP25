@@ -1,0 +1,321 @@
+
+clear,clc
+
+% Generate lat/lon/alt data for a simplified flight from BWI to ORD
+num_points = 91; % 1 point per minute for 90 minutes
+time_min = linspace(0, 90, num_points);
+
+% BWI (lat/lon): 39.1754° N, -76.6684° W
+% ORD (lat/lon): 41.9742° N, -87.9073° W
+
+lat_start = 39.1754;
+lon_start = -76.6684;
+lat_end = 41.9742;
+lon_end = -87.9073;
+
+% Interpolate linearly for lat/lon
+lat_min = linspace(lat_start, lat_end, num_points);
+lon_min = linspace(lon_start, lon_end, num_points);
+
+% Altitude profile (ft)
+alt_min = zeros(1, num_points);
+for i = 1:num_points
+    t = time_min(i);
+    if t < 15
+        alt_min(i) = 35000 * (t / 15); % climb
+    elseif t < 75
+        alt_min(i) = 35000; % cruise
+    else
+        alt_min(i) = 35000 * (1 - (t - 75) / 15); % descent
+    end
+end
+
+% Interpolate to 1Hz (1 point per second)
+time_sec = 0:1:90*60; % 0 to 5400 seconds
+lat_sec = interp1(time_min*60, lat_min, time_sec, 'linear');
+lon_sec = interp1(time_min*60, lon_min, time_sec, 'linear');
+alt_sec = interp1(time_min*60, alt_min, time_sec, 'linear');
+
+figure;
+geoplot(lat_sec, lon_sec, 'b', 'LineWidth', 2)
+geobasemap streets
+title('Simulated Flight Path from BWI to ORD')
+
+figure
+plot(time_sec/60, alt_sec, 'LineWidth',2);
+ylim([0, 40000])
+ylabel("ft");
+xlabel("time (minutes)")
+title("Flight Altitude Profile")
+grid on
+
+%% Read NAVAID Data
+
+navaids = readtable('NAVAID_System.csv');
+% Logical indices for each VOR class
+isLow = contains(navaids.CLASS_TXT, 'L-VOR');
+isHigh = contains(navaids.CLASS_TXT, 'H-VOR');
+
+% Extract relevant data and convert to struct arrays
+low = table2struct(navaids(isLow, {'X', 'Y', 'CLASS_TXT', 'IDENT'}));
+high = table2struct(navaids(isHigh, {'X', 'Y', 'CLASS_TXT', 'IDENT'}));
+
+% Rename fields in struct for clarity (optional but matches requested names)
+low = arrayfun(@(s) struct('x', s.X, 'y', s.Y, 'class', s.CLASS_TXT, 'ident', s.IDENT), low);
+high = arrayfun(@(s) struct('x', s.X, 'y', s.Y, 'class', s.CLASS_TXT, 'ident', s.IDENT), high);
+
+% Combine into final output struct
+navAidStruct.low = low;
+navAidStruct.high = high;
+
+% Extract lat/lon for low and high VORs
+lat_low = [navAidStruct.low.y];
+lon_low = [navAidStruct.low.x];
+
+lat_high = [navAidStruct.high.y];
+lon_high = [navAidStruct.high.x];
+
+% Create a geographic axes
+figure;
+gx = geoplot(lat_low, lon_low, 'ro', 'MarkerSize', 6, 'DisplayName', 'L-VOR');
+hold(gx.Parent, 'on');  % Use parent of geoplot (the geoaxes)
+
+% Plot high VORs on the same map
+geoplot(lat_high, lon_high, 'bo', 'MarkerSize', 6, 'DisplayName', 'H-VOR');
+
+% Final touches
+geobasemap streets
+title('VOR Locations')
+legend show
+
+
+%% Fly Flightpath and find VOR's
+
+for i = 1:numel(time_sec)
+
+    myLat = lat_sec(i);
+    myLon = lon_sec(i);
+    myAlt = alt_sec(i);
+    [lat1(i), lon1(i), lat2(i), lon2(i)] = findVORs(myLat, myLon, myAlt, navAidStruct);
+
+    if ~isnan(lat1(i)*lon1(i)*lat2(i)*lon2(i))
+        disp('running intersection routine');
+        if myLon < -84.2817
+            plotflag = 0;
+        else
+            plotflag = 0;
+        end
+        [area(i), major(i), minor(i)] = intersecting_cones_2d(lat1(i), lon1(i), lat2(i), lon2(i), myLat, myLon, 2.5, plotflag);
+        disp(area(i));
+    else
+        area(i) = NaN;
+        major(i) = NaN;
+        minor(i) = NaN;
+    end
+
+end
+
+
+% plot selected VORs along flight path
+% Highlight selected closest VORs (if found)
+figure;
+gx = geoplot(lat_low, lon_low, 'ro', 'MarkerSize', 6, 'DisplayName', 'L-VOR');
+hold(gx.Parent, 'on');
+geoplot(lat_high, lon_high, 'bo', 'MarkerSize', 6, 'DisplayName', 'H-VOR');
+
+geoplot(lat_sec, lon_sec, 'm', 'LineWidth', 2)
+
+% for i = 1:numel(lat1)
+%     if ~isnan(lat1(i))
+%         geoplot(lat1(i), lon1(i), 'go', 'MarkerSize', 10, 'LineWidth', 1.5, 'DisplayName', 'Selected VOR1');
+%     end
+% 
+%     if ~isnan(lat2(i))
+%         geoplot(lat2(i), lon2(i), 'co', 'MarkerSize', 10, 'LineWidth', 1.5, 'DisplayName', 'Selected VOR2');
+%     end
+% end
+
+% Final map setup
+geobasemap topographic
+title(sprintf('Aircraft VOR Selection'))
+%legend show
+
+
+% plot positional uncertainties
+figure
+plot(time_sec/60, major*0.000164579, 'LineWidth',2)
+grid on
+hold on
+plot(time_sec/60, minor*0.000164579, 'LineWidth',2)
+legend('Max Uncertainty (major)', 'Min Uncertainty (minor')
+ylabel('Nautical Miles')
+xlabel('time (minutes)')
+
+function [lat1, lon1, lat2, lon2] = findVORs(myLat, myLon, myAlt, navaids)
+
+    % distance values
+    dist1 = inf;
+    dist2 = inf;
+
+    % Initialize outputs as NaN
+    lat1 = NaN; lon1 = NaN; lat2 = NaN; lon2 = NaN;
+    
+    % Convert nautical miles to meters
+    nm2m = 1852;
+
+    % Helper function to compute distance using haversine formula
+    haversine = @(lat1, lon1, lat2, lon2) ...
+        2 * 6371000 * asin( ...
+        sqrt( sin(deg2rad((lat2 - lat1)/2)).^2 + ...
+        cos(deg2rad(lat1)) .* cos(deg2rad(lat2)) .* ...
+        sin(deg2rad((lon2 - lon1)/2)).^2 ) );
+
+    % Check LOW VOR's First
+    if myAlt < 14500
+        % Loop through low VORs
+        for i = 1:length(navaids.low)
+            lat = navaids.low(i).y;
+            lon = navaids.low(i).x;
+            dist = haversine(myLat, myLon, lat, lon);
+            if dist <= 40 * nm2m && dist < dist1
+                % update leaderboard
+                lat2 = lat1;
+                lon2 = lon1;
+                dist2 = dist1;
+                dist1 = dist;
+                lat1 = lat;
+                lon1 = lon;
+
+            elseif dist <= 40 * nm2m && dist < dist2
+                % update leaderboard
+                lat2 = lat;
+                lon2 = lon;
+                dist2 = dist;
+            end
+        end
+    end
+
+    % ---- HIGH VOR RULE ----
+    % Check which layer myAlt falls into and apply range filter
+    highRanges = [ ...
+        1000     14500  40;   % Layer 1
+        14500    18000  100;  % Layer 2
+        18000    45000  130;  % Layer 3
+        45000    60000  100]; % Layer 4
+
+    rangeNM = 0;
+    for i = 1:size(highRanges,1)
+        if myAlt >= highRanges(i,1) && myAlt <= highRanges(i,2)
+            rangeNM = highRanges(i,3);
+            break;
+        end
+    end
+
+    if rangeNM > 0
+        for i = 1:length(navaids.high)
+            lat = navaids.high(i).y;
+            lon = navaids.high(i).x;
+            dist = haversine(myLat, myLon, lat, lon);
+            if dist <= rangeNM * nm2m && dist < dist1
+                % update leaderboard
+                lat2 = lat1;
+                lon2 = lon1;
+                dist2 = dist1;
+                dist1 = dist;
+                lat1 = lat;
+                lon1 = lon;
+            elseif dist <= rangeNM * nm2m && dist < dist2
+                % update leaderboard
+                lat2 = lat;
+                lon2 = lon;
+                dist2 = dist;
+            end
+        end
+    end
+
+    % if we grabbed the same point, set one to nan
+    if lat1 == lat2 && lon1 == lon2
+        lat2 = NaN;
+        lon2 = NaN;
+    end
+end
+
+function [area_ft2, majorAxis, minorAxis] = intersecting_cones_2d(lat1, lon1, lat2, lon2, myLat, myLon, coneAngleDeg, plotFlag)
+    if nargin < 7 || isempty(coneAngleDeg)
+        coneAngleDeg = 4.77;
+    end
+    if nargin < 8
+        plotFlag = false;
+    end
+
+    R_miles = 3960;
+    mile2ft = 5280;
+
+    % Convert lat/lon to XY in feet
+    latRef = mean([lat1, lat2, myLat]);
+    lonRef = mean([lon1, lon2, myLon]);
+    [x1, y1] = latlon_to_xy(lat1, lon1, latRef, lonRef, R_miles, mile2ft);
+    [x2, y2] = latlon_to_xy(lat2, lon2, latRef, lonRef, R_miles, mile2ft);
+    [xt, yt] = latlon_to_xy(myLat, myLon, latRef, lonRef, R_miles, mile2ft);
+
+    theta = deg2rad(coneAngleDeg / 2);
+    r = 1e6;  % Max range of cone (feet)
+
+    % Create cone sectors
+    cone1 = create_cone_sector(x1, y1, xt, yt, theta, r);
+    cone2 = create_cone_sector(x2, y2, xt, yt, theta, r);
+
+    % Intersection
+    [xInt, yInt] = polybool('intersection', cone1(:,1), cone1(:,2), cone2(:,1), cone2(:,2));
+    area_ft2 = polyarea(xInt, yInt);
+
+    % Axis lengths from PCA
+    if ~isempty(xInt)
+        pts = [xInt(:), yInt(:)];
+        % Subtract mean
+        pts_centered = pts - mean(pts);
+        % PCA
+        C = cov(pts_centered);
+        [V, D] = eig(C);
+        % Sort eigenvalues
+        [eigvals, idx] = sort(diag(D), 'descend');
+        axesLengths = 2 * sqrt(eigvals);  % factor of 2 for full axis length
+        majorAxis = axesLengths(1);
+        minorAxis = axesLengths(2);
+    else
+        majorAxis = 0;
+        minorAxis = 0;
+    end
+
+    % Plot
+    if plotFlag
+        figure; hold on; axis equal;
+        fill(cone1(:,1), cone1(:,2), 'r', 'FaceAlpha', 0.3, 'EdgeColor', 'none');
+        fill(cone2(:,1), cone2(:,2), 'b', 'FaceAlpha', 0.3, 'EdgeColor', 'none');
+        if ~isempty(xInt)
+            fill(xInt, yInt, 'g', 'FaceAlpha', 0.5);
+        end
+        plot(xt, yt, 'k*', 'MarkerSize', 10);
+        title('2D Cone Intersection (Top-Down View)');
+        legend('Cone 1', 'Cone 2', 'Intersection', 'Target');
+        xlabel('X (ft)'); ylabel('Y (ft)');
+        % text(min(xInt), min(yInt), sprintf('Area: %.2f ft²\nMajor Axis: %.2f ft\nMinor Axis: %.2f ft', ...
+        %     area_ft2, majorAxis, minorAxis), 'BackgroundColor', 'w', 'EdgeColor', 'k');
+    end
+end
+
+% Helper: Convert lat/lon to flat XY (feet)
+function [x, y] = latlon_to_xy(lat, lon, latRef, lonRef, R_miles, mile2ft)
+    x = (deg2rad(lon - lonRef)) * R_miles * cos(deg2rad(latRef)) * mile2ft;
+    y = (deg2rad(lat - latRef)) * R_miles * mile2ft;
+end
+
+% Helper: Create cone sector
+function poly = create_cone_sector(x0, y0, xt, yt, halfAngle, r)
+    dir = atan2(yt - y0, xt - x0);
+    angles = linspace(dir - halfAngle, dir + halfAngle, 100);
+    xArc = x0 + r * cos(angles);
+    yArc = y0 + r * sin(angles);
+    poly = [x0, y0; [xArc(:), yArc(:)]; x0, y0];
+end
+
